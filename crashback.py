@@ -10,6 +10,7 @@ import numpy as np
 import pandas as pd
 import os
 import math
+from scipy.interpolate import interp1d
 
 __author__ = "Kyle E. Marlantes"
 __license__ = "GPLv3"
@@ -66,7 +67,7 @@ class Crashback ():
     [Delen2023] Cihad Delen, Sakir Bal (2023) A comprehensive experimental investigation of total drag and wave height of ONR Tumblehome, including uncertainty analysis
     """
 
-    def __init__(self, m, tf, rpm_shape=[], D=0, nProp=1, WSA=0, L=0, a11=0, thrust_data='SeriesB', resistance_data='ITTC1957'):
+    def __init__(self, m, tf, rpm_shape=[], D=0, nProp=1, WSA=0, L=0, a11=0, thrust_data=['SeriesB','B470data.csv'], resistance_data='ITTC1957'):
 
         """
         m: [kg] physical mass of the vessel
@@ -85,23 +86,34 @@ class Crashback ():
 
         a11: [kg] added mass in surge
         
-        thrust_data: default 'SeriesB' will use the Wageningen B Series data
-                     or, user specified path and filename to thrust data, must follow format of example file
+        thrust_data: list of two elements
+                     first entry is a data identifier:
+                         default 'SeriesB' will use the predefined Wageningen B Series data
+                         optional 'JKTKQ' will use a user file of three columns, J, KT, and KQ. First line reserved for column headings
+                     second entry is the datafile name.
 
         resistance_data: default 'ITTC1957' will use the ITTC 1957 skin-friction line
                           or, user specified path and filename to resistance data, must follow format of example file            
         """
 
         self.thrust_method = 'User'
-        if thrust_data=='SeriesB':
-            self.thrust_method = thrust_data
+        if thrust_data[0]=='SeriesB':
+            self.thrust_method = thrust_data[0]
             # check for and read in predefined datafiles
-            df = pd.read_csv('B470data.csv', skiprows=0, delim_whitespace=False)
+            df = pd.read_csv(thrust_data[1], skiprows=0, delim_whitespace=False)
             self.propeller = {}
             self.propeller['K'] = np.array(df['K']) 
             self.propeller['T-A(k)'] = np.array(df['T-A(k)']) 
-            self.propeller['T-B(k)'] = np.array(df['T-B(k)']) 
-
+            self.propeller['T-B(k)'] = np.array(df['T-B(k)'])
+        elif thrust_data[0]=='JKTKQ':
+            # table of J, KT, and KQ
+            self.thrust_method = thrust_data[0]
+            df = pd.read_csv(thrust_data[1], skiprows=0, delim_whitespace=True)
+            self.propeller = {}
+            self.propeller['J'] = np.array(df['J']) 
+            self.propeller['K_T'] = np.array(df['K_T']) 
+            self.propeller['K_Q'] = np.array(df['K_Q'])
+            self.propeller['K_T_interp'] = interp1d(np.array(df['J']), np.array(df['K_T']), kind='linear')
         else:
             # self.thrust_method = 'User'
             self.thrust_data_fn = thrust_data
@@ -175,18 +187,24 @@ class Crashback ():
         else:
             return self.rpm_shape[1] # always final rpm
         
-    def compute_thrust (self,uA,N,beta):
+    def compute_thrust (self,uA,N):
         """Computes the thrust for the propeller(s).
         uA: [m/s] advance velocity
         N: [rpm] propeller revolutions per minute
-        beta: [radians] propeller Beta
-        """        
+        """
+        nn = N/60. # rev per second
+        J = self.advance_ratio(uA,N)
         if self.thrust_method=='User':
             # use interpolant
             return 0
+        elif self.thrust_method=='JKTKQ':
+            if J>max(self.propeller['J']): J=max(self.propeller['J']) # overrun of interpolant
+            if J<min(self.propeller['J']): J=min(self.propeller['J'])
+            KT = self.propeller['K_T_interp'](J)
+            return KT * self.rho * abs(nn)**2 * self.D**4            
         elif self.thrust_method=='SeriesB':
             # Appendix B in Roddy2006
-            nn = N/60. # rev per second
+            beta = self.compute_beta(J)
             if nn==0.: return 0 # CT_BSeries yields small nonzero values for beta=0, only valid for uA=0, N!=0
             else:
                 CT = self.CT_BSeries(beta)
@@ -207,11 +225,9 @@ class Crashback ():
         def compute_q(u_new0,t,n):
             """Compute the forcing vector on the right-hand-side."""  
             rpm = self.compute_rpm(t)
-            # passing u_new0[1] below assumes advance velocity is equal to ship velocity
-            J = self.advance_ratio(u_new0[1],rpm)
-            beta = self.compute_beta(J)
+            # passing u_new0[1] below assumes advance velocity is equal to ship velocity            
             # multiply by number of propellers for multi-screw vessels
-            T = self.compute_thrust(u_new0[1],rpm,beta)
+            T = self.compute_thrust(u_new0[1],rpm)
             R = self.compute_resistance(u_new0[1]) 
             f = self.nProp*T - R
             return np.array([0.,f/(self.m+self.a11)])
@@ -294,7 +310,7 @@ class Crashback ():
         self.rpm[0] = self.rpm_shape[0]
 
         # update initial thrust here
-        self.thrust[0] = self.nProp*self.compute_thrust(self.vel[0],self.rpm[0],self.beta[0])
+        self.thrust[0] = self.nProp*self.compute_thrust(self.vel[0],self.rpm[0])
         self.drag[0] = self.compute_resistance(self.vel[0]) 
 
         t=self.time[0]; n=0
@@ -312,10 +328,10 @@ class Crashback ():
             self.J.append(self.advance_ratio(u_new[1],self.rpm[n]))
             self.beta.append(self.compute_beta(self.J[n]))
 
-            self.thrust.append(self.nProp*self.compute_thrust(u_new[1],self.rpm[n],self.beta[n]))
+            self.thrust.append(self.nProp*self.compute_thrust(u_new[1],self.rpm[n]))
             self.drag.append(self.compute_resistance(u_new[1]))
 
-            if self.beta[n]>=np.radians(179.99): # exit condition prior to backing
+            if self.beta[n]>=np.radians(179.9): # exit condition prior to backing
                 print(r'...exiting on Beta = 180 degrees.')
                 break 
             
