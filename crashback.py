@@ -90,6 +90,7 @@ class Crashback ():
                      first entry is a data identifier:
                          default 'SeriesB' will use the predefined Wageningen B Series data
                          optional 'JKTKQ' will use a user file of three columns, J, KT, and KQ. First line reserved for column headings
+                         optional 'BCTCQ' will use a user file of three columns, Beta (in deg), CT, and CQ. First line reserved for column headings
                      second entry is the datafile name.
 
         resistance_data: default 'ITTC1957' will use the ITTC 1957 skin-friction line
@@ -114,6 +115,15 @@ class Crashback ():
             self.propeller['K_T'] = np.array(df['K_T']) 
             self.propeller['K_Q'] = np.array(df['K_Q'])
             self.propeller['K_T_interp'] = interp1d(np.array(df['J']), np.array(df['K_T']), kind='linear')
+        elif thrust_data[0]=='BCTCQ':
+            # table of Beta, CT, and CQ
+            self.thrust_method = thrust_data[0]
+            df = pd.read_csv(thrust_data[1], skiprows=0, delim_whitespace=True)
+            self.propeller = {}
+            self.propeller['Beta'] = np.array(df['#Beta']) 
+            self.propeller['C_T'] = np.array(df['C_T']) 
+            self.propeller['C_Q'] = np.array(df['C_Q'])
+            self.propeller['C_T_interp'] = interp1d(np.radians(np.array(df['#Beta'])), np.array(df['C_T']), kind='linear')
         else:
             # self.thrust_method = 'User'
             self.thrust_data_fn = thrust_data
@@ -194,6 +204,7 @@ class Crashback ():
         """
         nn = N/60. # rev per second
         J = self.advance_ratio(uA,N)
+        beta = self.compute_beta(J)
         if self.thrust_method=='User':
             # use interpolant
             return 0
@@ -201,10 +212,12 @@ class Crashback ():
             if J>max(self.propeller['J']): J=max(self.propeller['J']) # overrun of interpolant
             if J<min(self.propeller['J']): J=min(self.propeller['J'])
             KT = self.propeller['K_T_interp'](J)
-            return KT * self.rho * abs(nn)**2 * self.D**4            
+            return KT * self.rho * abs(nn)**2 * self.D**4
+        elif self.thrust_method=='BCTCQ':
+            CT = self.propeller['C_T_interp'](beta)
+            return CT * 0.5*self.rho*(uA**2 + (0.7*np.pi*abs(nn)*self.D)**2) * 0.25*np.pi*self.D**2
         elif self.thrust_method=='SeriesB':
-            # Appendix B in Roddy2006
-            beta = self.compute_beta(J)
+            # Appendix B in Roddy2006            
             if nn==0.: return 0 # CT_BSeries yields small nonzero values for beta=0, only valid for uA=0, N!=0
             else:
                 CT = self.CT_BSeries(beta)
