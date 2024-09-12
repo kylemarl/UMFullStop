@@ -11,6 +11,7 @@ import pandas as pd
 import os
 import math
 from scipy.interpolate import interp1d
+import datetime
 
 __author__ = "Kyle E. Marlantes"
 __license__ = "GPLv3"
@@ -136,9 +137,15 @@ class Crashback ():
             if L==0:
                 raise ValueError('L must be provided when using ITTC1957 resistance method.')
         else:
-            # self.thrust_method = 'User'
+            # user data file of Fr and Ct
+            self.resistance_method = 'User'
             self.resistance_data_fn = resistance_data
-            # read user data and prepare interpolant
+            df = pd.read_csv(resistance_data, skiprows=0, delim_whitespace=True)
+            self.resistance = {}
+            self.resistance['Fr'] = np.array(df['#Fr']) # measured Froude number
+            self.resistance['Ct'] = np.array(df['Ct']) # measured total resistance coefficient
+            self.resistance['Ct_interp'] = interp1d(np.array(df['#Fr']), np.array(df['Ct']), kind='linear')
+            
 
         self.m = m
         self.tf = tf
@@ -150,12 +157,17 @@ class Crashback ():
         self.nProp = nProp
         self.nu = 1.1304e-6 # [m^2/s] seawater at 17C per ITTC water properties
         self.rho = 1025.5633 # [kg/m^3]
+        self.g = 9.81 # [m/s^2]
 
         self.idx = 0 # make this a private variable? make a "global" index instead of passing n all the time...
     
     def Re (self,u):
         """Returns Reynolds number for given speed."""
         return u*self.L/self.nu
+
+    def Fr (self,u):
+        """Returns Froude number for given speed."""
+        return u/np.sqrt(self.g*self.L)
 
     def coef_to_force (self,C,u):
         return C * 0.5 * self.rho * u**2 * self.WSA
@@ -226,8 +238,14 @@ class Crashback ():
     def compute_resistance (self,u):
         """Computes the resistance for the given speed."""
         if self.resistance_method=='User':
-            # use interpolant
-            return 0
+            # this uses Ct directly and does not use skin-friction line to compute residuary resistance component
+            # residuary approach could be added, but it would require internal knowledge of model scaling, which
+            # is currently kept on the user input side for clarity
+            Fr = self.Fr(u)
+            if Fr>max(self.resistance['Fr']): Fr = max(self.resistance['Fr'])
+            elif Fr<min(self.resistance['Fr']): Fr = min(self.resistance['Fr'])
+            CT = self.resistance['Ct_interp'](Fr)
+            return self.coef_to_force(CT,u)
         elif self.resistance_method=='ITTC1957':
             CF = self.CF_ittc_1957(u)
             return self.coef_to_force(CF,u)
@@ -350,3 +368,30 @@ class Crashback ():
             
             if (t%(0.1*max_time)<=1e-2):             
                 print('...time ',f'{t:.1f}',' of ',max_time)
+
+    def write_data (self,filename=''):
+        """Write simulation data to a file."""
+        with open(filename,'w') as file:
+            file.write(f"Crashback Simulation Results\n")
+            file.write(f"{'{:%Y-%m-%d %H:%M:%S}'.format(datetime.datetime.now())}\n")
+            file.write(f"length (m): {self.L}\n")
+            file.write(f"wetted surface area (m^2): {self.WSA}\n")
+            file.write(f"physical mass (kg): {self.m}\n")
+            file.write(f"surge added mass (kg): {self.a11}\n")
+                        
+            file.write(f"propeller diameter (m): {self.D}\n")
+            file.write(f"number of propellers (-): {self.nProp}\n")
+            file.write(f"rpm shape (rpm): {self.rpm_shape}\n")
+            file.write(f"rpm ramp time (s): {self.tf}\n")
+                        
+            file.write(f"thrust method: {self.thrust_method}\n")
+            file.write(f"resistance method: {self.resistance_method}\n")
+
+            # now write time series data
+            file.write(f"time (s)\t pos (m)\t vel (m/s)\t acc (m/s^2)\t rpm (-)\t beta (deg)\t J (-)\t thrust (N)\t drag (N)\n")
+            for n in range(len(self.time)):
+                line = f"{self.time[n]:.2f}\t{self.pos[n]:.3f}\t{self.vel[n]:.3f}\t{self.acc[n]:.3f}\t"
+                line += f"{self.rpm[n]:.1f}\t{np.degrees(self.beta[n]):.1f}\t{self.J[n]:.3f}\t"
+                line += f"{self.thrust[n]:.1f}\t{self.drag[n]:.1f}\n"
+                file.write(line)
+                
