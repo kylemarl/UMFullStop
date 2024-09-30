@@ -4,6 +4,8 @@ crashback.py: Class implementation of surge equation of motion for ship crashbac
 (c) 2024 The Regents of the University of Michigan
 
 This code is licensed under the GNU GPL v3 license, available at https://opensource.org/license/gpl-3-0
+
+This software is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either expressed or implied.
 """
 
 import numpy as np
