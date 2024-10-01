@@ -1,0 +1,13 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+authors:
+- family-names: "Marlantes"
+  given-names: "Kyle"
+  orcid: "https://orcid.org/0000-0002-0003-3617"
+- family-names: "Maki"
+  given-names: "Kevin"
+  orcid: "https://orcid.org/0000-0001-7286-7402"
+title: "crashback"
+version: 1.0.0
+date-released: 2024-09-30
+url: "https://github.com/kylemarl/crashback"
