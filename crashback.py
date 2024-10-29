@@ -4,8 +4,6 @@ crashback.py: Class implementation of surge equation of motion for ship crashbac
 (c) 2024 The Regents of the University of Michigan
 
 This code is licensed under the GNU GPL v3 license, available at https://opensource.org/license/gpl-3-0
-
-This software is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either expressed or implied.
 """
 
 import numpy as np
@@ -17,7 +15,7 @@ import datetime
 
 __author__ = "Kyle E. Marlantes"
 __license__ = "GPLv3"
-__version__ = "0.0.0"
+__version__ = "2.0.0"
 __maintainer__ = "Kyle Marlantes"
 __email__ = "kylemarl@umich.edu"
 __status__ = "Research"
@@ -109,6 +107,8 @@ class Crashback ():
             self.propeller['K'] = np.array(df['K']) 
             self.propeller['T-A(k)'] = np.array(df['T-A(k)']) 
             self.propeller['T-B(k)'] = np.array(df['T-B(k)'])
+            self.propeller['Q-A(k)'] = np.array(df['Q-A(k)']) 
+            self.propeller['Q-B(k)'] = np.array(df['Q-B(k)'])
         elif thrust_data[0]=='JKTKQ':
             # table of J, KT, and KQ
             self.thrust_method = thrust_data[0]
@@ -118,6 +118,7 @@ class Crashback ():
             self.propeller['K_T'] = np.array(df['K_T']) 
             self.propeller['K_Q'] = np.array(df['K_Q'])
             self.propeller['K_T_interp'] = interp1d(np.array(df['J']), np.array(df['K_T']), kind='linear')
+            self.propeller['K_Q_interp'] = interp1d(np.array(df['J']), np.array(df['K_Q']), kind='linear')
         elif thrust_data[0]=='BCTCQ':
             # table of Beta, CT, and CQ
             self.thrust_method = thrust_data[0]
@@ -127,6 +128,7 @@ class Crashback ():
             self.propeller['C_T'] = np.array(df['C_T']) 
             self.propeller['C_Q'] = np.array(df['C_Q'])
             self.propeller['C_T_interp'] = interp1d(np.radians(np.array(df['#Beta'])), np.array(df['C_T']), kind='linear')
+            self.propeller['C_Q_interp'] = interp1d(np.radians(np.array(df['#Beta'])), np.array(df['C_Q']), kind='linear')
         else:
             # self.thrust_method = 'User'
             self.thrust_data_fn = thrust_data
@@ -204,6 +206,13 @@ class Crashback ():
         CT = 0.01*np.sum(Ak*np.cos(np.radians(k*np.degrees(beta))) + Bk*np.sin(np.radians(k*np.degrees(beta))))
         return CT
 
+    def CQ_BSeries (self,beta):
+        Ak = self.propeller['Q-A(k)']
+        Bk = self.propeller['Q-B(k)']
+        k = self.propeller['K']
+        CQ = -0.001*np.sum(Ak*np.cos(np.radians(k*np.degrees(beta))) + Bk*np.sin(np.radians(k*np.degrees(beta))))
+        return CQ
+
     def compute_rpm (self,t):
         """Returns rpm for current time."""
         if t<self.tf:
@@ -211,8 +220,8 @@ class Crashback ():
         else:
             return self.rpm_shape[1] # always final rpm
         
-    def compute_thrust (self,uA,N):
-        """Computes the thrust for the propeller(s).
+    def compute_thrust_torque (self,uA,N):
+        """Computes the thrust and torque for a propeller.
         uA: [m/s] advance velocity
         N: [rpm] propeller revolutions per minute
         """
@@ -221,21 +230,30 @@ class Crashback ():
         beta = self.compute_beta(J)
         if self.thrust_method=='User':
             # use interpolant
-            return 0
+            thrust = 0; torque = 0
         elif self.thrust_method=='JKTKQ':
             if J>max(self.propeller['J']): J=max(self.propeller['J']) # overrun of interpolant
             if J<min(self.propeller['J']): J=min(self.propeller['J'])
             KT = self.propeller['K_T_interp'](J)
-            return KT * self.rho * abs(nn)**2 * self.D**4
+            KQ = self.propeller['K_Q_interp'](J)
+            thrust = KT * self.rho * abs(nn)**2 * self.D**4
+            torque = KQ * self.rho * abs(nn)**2 * self.D**5
         elif self.thrust_method=='BCTCQ':
             CT = self.propeller['C_T_interp'](beta)
-            return CT * 0.5*self.rho*(uA**2 + (0.7*np.pi*abs(nn)*self.D)**2) * 0.25*np.pi*self.D**2
+            CQ = self.propeller['C_Q_interp'](beta)
+            thrust = CT * 0.5*self.rho*(uA**2 + (0.7*np.pi*abs(nn)*self.D)**2) * 0.25*np.pi*self.D**2
+            torque = CQ * 0.5*self.rho*(uA**2 + (0.7*np.pi*abs(nn)*self.D)**2) * 0.25*np.pi*self.D**3
         elif self.thrust_method=='SeriesB':
             # Appendix B in Roddy2006            
-            if nn==0.: return 0 # CT_BSeries yields small nonzero values for beta=0, only valid for uA=0, N!=0
+            if nn==0.: # not sure this is correct
+                thrust = 0 # CT_BSeries yields small nonzero values for beta=0, only valid for uA=0, N!=0
+                torque = 0
             else:
                 CT = self.CT_BSeries(beta)
-                return CT * 0.5*self.rho*(uA**2 + (0.7*np.pi*abs(nn)*self.D)**2) * 0.25*np.pi*self.D**2
+                CQ = self.CQ_BSeries(beta)
+                thrust = CT * 0.5*self.rho*(uA**2 + (0.7*np.pi*abs(nn)*self.D)**2) * 0.25*np.pi*self.D**2
+                torque = CQ * 0.5*self.rho*(uA**2 + (0.7*np.pi*abs(nn)*self.D)**2) * 0.25*np.pi*self.D**3
+        return thrust, torque
 
     def compute_resistance (self,u):
         """Computes the resistance for the given speed."""
@@ -260,7 +278,7 @@ class Crashback ():
             rpm = self.compute_rpm(t)
             # passing u_new0[1] below assumes advance velocity is equal to ship velocity            
             # multiply by number of propellers for multi-screw vessels
-            T = self.compute_thrust(u_new0[1],rpm)
+            T,Q = self.compute_thrust_torque(u_new0[1],rpm)
             R = self.compute_resistance(u_new0[1]) 
             f = self.nProp*T - R
             return np.array([0.,f/(self.m+self.a11)])
@@ -329,7 +347,7 @@ class Crashback ():
         self.time = [0]
         self.pos,self.vel,self.acc = [0],[0],[0]
         self.rpm,self.beta,self.J = [0],[0],[0]
-        self.thrust,self.drag = [0],[0]
+        self.thrust,self.torque,self.drag = [0],[0],[0]
 
         A = np.array([[0,1],[0,0]])
 
@@ -342,8 +360,8 @@ class Crashback ():
         self.vel[0] = u_now[1]
         self.rpm[0] = self.rpm_shape[0]
 
-        # update initial thrust here
-        self.thrust[0] = self.nProp*self.compute_thrust(self.vel[0],self.rpm[0])
+        # update initial thrust and torque here
+        self.thrust[0],self.torque[0] = self.compute_thrust_torque(self.vel[0],self.rpm[0])
         self.drag[0] = self.compute_resistance(self.vel[0]) 
 
         t=self.time[0]; n=0
@@ -361,7 +379,9 @@ class Crashback ():
             self.J.append(self.advance_ratio(u_new[1],self.rpm[n]))
             self.beta.append(self.compute_beta(self.J[n]))
 
-            self.thrust.append(self.nProp*self.compute_thrust(u_new[1],self.rpm[n]))
+            thrust,torque = self.compute_thrust_torque(u_new[1],self.rpm[n])
+            self.thrust.append(thrust) # store for single propeller (assumes they are the same)
+            self.torque.append(torque) #
             self.drag.append(self.compute_resistance(u_new[1]))
 
             if self.beta[n]>=np.radians(179.9): # exit condition prior to backing
@@ -386,14 +406,14 @@ class Crashback ():
             file.write(f"rpm shape (rpm): {self.rpm_shape}\n")
             file.write(f"rpm ramp time (s): {self.tf}\n")
                         
-            file.write(f"thrust method: {self.thrust_method}\n")
+            file.write(f"thrust/torque method: {self.thrust_method}\n")
             file.write(f"resistance method: {self.resistance_method}\n")
 
             # now write time series data
-            file.write(f"time (s)\t pos (m)\t vel (m/s)\t acc (m/s^2)\t rpm (-)\t beta (deg)\t J (-)\t thrust (N)\t drag (N)\n")
+            file.write(f"time (s)\t pos (m)\t vel (m/s)\t acc (m/s^2)\t rpm (-)\t beta (deg)\t J (-)\t thrust (N)\t torque (N-m)\t drag (N)\n")
             for n in range(len(self.time)):
                 line = f"{self.time[n]:.2f}\t{self.pos[n]:.3f}\t{self.vel[n]:.3f}\t{self.acc[n]:.3f}\t"
                 line += f"{self.rpm[n]:.1f}\t{np.degrees(self.beta[n]):.1f}\t{self.J[n]:.3f}\t"
-                line += f"{self.thrust[n]:.1f}\t{self.drag[n]:.1f}\n"
+                line += f"{self.thrust[n]:.1f}\t{self.torque[n]:.1f}\t{self.drag[n]:.1f}\n"
                 file.write(line)
                 
